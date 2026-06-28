@@ -1,0 +1,9 @@
+*.user
+*.suo
+[Dd]ebug/
+[Rr]elease/
+[Tt]emp/
+[Bb]in/
+[Oo]bj/
+packages/
+*.nupkg
