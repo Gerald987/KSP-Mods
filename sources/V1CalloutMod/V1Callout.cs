@@ -22,43 +22,36 @@ namespace V1CalloutMod
 
         private double v1, vr, v2;
         private bool v1Called, vrCalled, v2Called;
-        private bool calloutsActive;
+        private bool active;
         private double startAlt;
-        private AudioSource audioSource;
-        private bool initialized;
+        private AudioSource audioSrc;
 
         private float msgTimer;
-        private string msg;
-        private GUIStyle msgStyle;
+        private string msgText;
+        private GUIStyle bigStyle;
         private GUIStyle infoStyle;
-        private bool stylesReady;
+        private bool ready;
 
         void Start()
         {
-            audioSource = gameObject.AddComponent<AudioSource>();
-            audioSource.volume = 0.8f;
+            audioSrc = gameObject.AddComponent<AudioSource>();
+            audioSrc.volume = 1.0f;
         }
 
-        private double GetGroundSpeed(Vessel v)
+        private double GroundSpeed(Vessel v)
         {
             return v.GetSrfVelocity().magnitude;
         }
 
-        private double GetMaxThrust(Vessel v)
+        private double TotalThrust(Vessel v)
         {
             double thrust = 0;
             foreach (Part p in v.parts)
             {
-                if (!p.Modules.OfType<ModuleEngines>().Any() && 
-                    !p.Modules.OfType<ModuleEnginesFX>().Any()) continue;
                 foreach (var eng in p.Modules.OfType<ModuleEngines>())
-                {
-                    if (eng.EngineIgnited) thrust += eng.maxThrust;
-                }
+                    thrust += eng.maxThrust;
                 foreach (var eng in p.Modules.OfType<ModuleEnginesFX>())
-                {
-                    if (eng.EngineIgnited) thrust += eng.maxThrust;
-                }
+                    thrust += eng.maxThrust;
             }
             return thrust;
         }
@@ -68,22 +61,20 @@ namespace V1CalloutMod
             Vessel v = FlightGlobals.ActiveVessel;
             if (v == null || v.parts == null || !v.loaded) return;
 
-            double spd = GetGroundSpeed(v);
+            double spd = GroundSpeed(v);
 
-            if (!initialized)
+            // Auto-arm: throttle up + rolling on ground
+            if (!active)
             {
-                if (v.situation == Vessel.Situations.PRELAUNCH ||
-                    (v.situation == Vessel.Situations.LANDED && 
-                     v.ctrlState.mainThrottle > 0.01f && spd > 1.0))
+                if (v.ctrlState.mainThrottle > 0.05f && spd > 2.0 &&
+                    (v.situation == Vessel.Situations.LANDED || v.situation == Vessel.Situations.PRELAUNCH))
                 {
-                    CalcSpeeds(v);
-                    initialized = true;
-                    calloutsActive = true;
+                    Init(v);
+                    active = true;
+                    Debug.Log("[V1Callout] Armed — throttle=" + v.ctrlState.mainThrottle + " spd=" + spd);
                 }
                 return;
             }
-
-            if (!calloutsActive) return;
 
             double agl = v.altitude - startAlt;
             double vs = v.verticalSpeed;
@@ -91,125 +82,107 @@ namespace V1CalloutMod
             if (!v1Called && spd >= v1)
             {
                 v1Called = true;
-                Bing(880);
-                ShowMsg("V1  —  DECISION SPEED", Color.yellow);
+                Beep(880);
+                Show("V1  —  DECISION SPEED", 3f);
             }
 
-            if (v1Called && !vrCalled && spd >= vr && agl < 50)
+            if (!vrCalled && v1Called && spd >= vr && agl < 50)
             {
                 vrCalled = true;
-                Bing(660);
-                ShowMsg("ROTATE  —  VR", Color.green);
+                Beep(660);
+                Show("ROTATE  —  VR", 3f);
             }
 
-            if (vrCalled && !v2Called && agl > 5 && vs > 1.5)
+            if (!v2Called && vrCalled && agl > 5 && vs > 1.0)
             {
                 v2Called = true;
-                Bing(440);
-                ShowMsg("V2  —  POSITIVE RATE", Color.cyan);
-                calloutsActive = false;
+                Beep(440);
+                Show("V2  —  POSITIVE RATE", 3f);
+                active = false;
             }
 
-            if (v.situation == Vessel.Situations.LANDED && spd < 1 && !v2Called)
+            // Reset if stopped before takeoff
+            if (spd < 0.5 && !v2Called)
             {
-                initialized = false;
-                calloutsActive = false;
-                v1Called = false;
-                vrCalled = false;
-                v2Called = false;
+                active = false;
+                v1Called = vrCalled = v2Called = false;
             }
         }
 
-        void CalcSpeeds(Vessel v)
+        void Init(Vessel v)
         {
             double mass = v.GetTotalMass();
-            double thrust = GetMaxThrust(v);
+            double thrust = TotalThrust(v);
             double twr = thrust / (mass * 9.81);
             startAlt = v.altitude;
 
-            string catName = "superheavy";
+            string cat = "superheavy";
             foreach (var kvp in categories)
-            {
-                if (mass >= kvp.Value[0] && mass < kvp.Value[1])
-                {
-                    catName = kvp.Key;
-                    break;
-                }
-            }
+                if (mass >= kvp.Value[0] && mass < kvp.Value[1]) { cat = kvp.Key; break; }
 
-            double[] cat = categories[catName];
-            v1 = cat[2];
-            vr = cat[3];
-            v2 = cat[4];
+            double[] c = categories[cat];
+            v1 = c[2]; vr = c[3]; v2 = c[4];
 
-            double twFactor = Math.Max(0.8, Math.Min(1.2, twr));
-            v1 *= twFactor;
-            vr *= twFactor;
-            v2 *= twFactor;
+            double twF = Math.Max(0.8, Math.Min(1.2, twr));
+            v1 *= twF; vr *= twF; v2 *= twF;
 
-            double altFactor = 1 + (startAlt / 10000);
-            v1 *= altFactor;
-            vr *= altFactor;
-            v2 *= altFactor;
+            double altF = 1 + (startAlt / 10000);
+            v1 *= altF; vr *= altF; v2 *= altF;
 
-            Debug.Log("[V1Callout] " + catName + " mass=" + mass.ToString("F1") + 
-                "t TWR=" + twr.ToString("F2") + " V1=" + v1.ToString("F1") + 
-                " VR=" + vr.ToString("F1") + " V2=" + v2.ToString("F1"));
+            Debug.Log("[V1Callout] " + cat + " mass=" + mass.ToString("F1") +
+                "t thrust=" + thrust.ToString("F0") + "kN TWR=" + twr.ToString("F2") +
+                " V1=" + v1.ToString("F1") + " VR=" + vr.ToString("F1") + " V2=" + v2.ToString("F1"));
         }
 
-        void Bing(float freq)
+        void Beep(float freq)
         {
             int sr = 44100;
-            int len = sr * 40 / 1000;
-            AudioClip clip = AudioClip.Create("bing", len, 1, sr, false);
+            int len = sr * 80 / 1000;
+            AudioClip clip = AudioClip.Create("b", len, 1, sr, false);
             float[] s = new float[len];
             for (int i = 0; i < len; i++)
-                s[i] = Mathf.Sin(2 * Mathf.PI * freq * i / sr) * 0.5f;
+                s[i] = Mathf.Sin(2 * Mathf.PI * freq * i / sr) * 0.4f;
             clip.SetData(s, 0);
-            audioSource.PlayOneShot(clip);
+            audioSrc.PlayOneShot(clip);
         }
 
-        void ShowMsg(string text, Color c)
+        void Show(string text, float dur)
         {
-            msg = text;
-            msgTimer = 3.0f;
-            ScreenMessages.PostScreenMessage(text, 3.0f, ScreenMessageStyle.UPPER_CENTER);
+            msgText = text;
+            msgTimer = dur;
+            ScreenMessages.PostScreenMessage(text, dur, ScreenMessageStyle.UPPER_CENTER);
         }
 
         void OnGUI()
         {
             if (msgTimer <= 0) return;
-
-            if (!stylesReady)
+            if (!ready)
             {
-                msgStyle = new GUIStyle(GUI.skin.label);
-                msgStyle.fontSize = 28;
-                msgStyle.fontStyle = FontStyle.Bold;
-                msgStyle.alignment = TextAnchor.MiddleCenter;
-
+                bigStyle = new GUIStyle(GUI.skin.label);
+                bigStyle.fontSize = 32;
+                bigStyle.fontStyle = FontStyle.Bold;
+                bigStyle.alignment = TextAnchor.MiddleCenter;
                 infoStyle = new GUIStyle(GUI.skin.label);
                 infoStyle.fontSize = 16;
                 infoStyle.alignment = TextAnchor.MiddleCenter;
-                stylesReady = true;
+                ready = true;
             }
 
             float x = Screen.width / 2f;
-            float a = Mathf.Min(1f, msgTimer / 1f);
-            Color c = msgTimer > 2f ? Color.yellow : (msgTimer > 1f ? Color.green : Color.cyan);
-            c.a = a;
-            msgStyle.normal.textColor = c;
-            GUI.Label(new Rect(x - 200, Screen.height * 0.35f, 400, 60), msg, msgStyle);
+            float a = Mathf.Min(1f, msgTimer);
 
-            if (calloutsActive)
+            bigStyle.normal.textColor = new Color(1, 1, 0, a);
+            GUI.Label(new Rect(x - 250, Screen.height * 0.30f, 500, 70), msgText, bigStyle);
+
+            if (active)
             {
                 Vessel v = FlightGlobals.ActiveVessel;
                 if (v != null)
                 {
-                    double spd = GetGroundSpeed(v);
+                    double spd = GroundSpeed(v);
                     infoStyle.normal.textColor = new Color(1, 1, 1, a);
-                    string info = "Speed: " + spd.ToString("F1") + " m/s";
-                    info += "  |  V1: " + v1.ToString("F1") + "  VR: " + vr.ToString("F1") + "  V2: " + v2.ToString("F1");
-                    GUI.Label(new Rect(x - 250, Screen.height * 0.35f + 70, 500, 30), info, infoStyle);
+                    GUI.Label(new Rect(x - 300, Screen.height * 0.30f + 75, 600, 25),
+                        "SPD " + spd.ToString("F0") + "  |  V1 " + v1.ToString("F0") + "  VR " + vr.ToString("F0") + "  V2 " + v2.ToString("F0"), infoStyle);
                 }
             }
 
